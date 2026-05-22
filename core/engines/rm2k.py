@@ -20,6 +20,9 @@ import os
 import shutil
 from typing import Dict, List, Optional, Tuple
 
+# Candidate source encodings tried in order during auto-detection
+_DETECT_CANDIDATES = ["cp932", "gbk", "big5", "cp1252", "utf-8"]
+
 log = logging.getLogger(__name__)
 
 STRING_SCRIPTS_DIRNAME = "StringScripts"
@@ -54,6 +57,55 @@ _CODE_TO_CODEC: Dict[str, str] = {
 
 def _codec(code: str) -> str:
     return _CODE_TO_CODEC.get(str(code), "cp932")
+
+
+def auto_detect_encoding(game_path: str) -> str:
+    """
+    Sniff the source encoding of RPG_RT.ldb by trying candidate codecs and
+    scoring how many bytes decode without replacement characters.
+    Falls back to cp932 if nothing conclusive is found.
+    """
+    ldb_path = os.path.join(game_path, "RPG_RT.ldb")
+    if not os.path.isfile(ldb_path):
+        return "cp932"
+
+    try:
+        data = open(ldb_path, "rb").read()
+        _, sections = _read_ldb(data)
+        # Collect raw name bytes from switches/variables/common-events
+        sample: List[bytes] = []
+        for key, sec in sections:
+            if key in (LDB_SWITCHES_KEY, LDB_VARIABLES_KEY, LDB_COMMON_EVENTS_KEY):
+                for _, fields in _parse_array(sec):
+                    nb = fields.get(FIELD_NAME, b"")
+                    if nb:
+                        sample.append(nb)
+                if len(sample) >= 30:
+                    break
+
+        if not sample:
+            return "cp932"
+
+        combined = b" ".join(sample)
+
+        best_enc, best_score = "cp932", -1
+        for enc in _DETECT_CANDIDATES:
+            try:
+                decoded = combined.decode(enc, errors="replace")
+                # Score = ratio of non-replacement characters
+                score = decoded.count("�")
+                if score < best_score or best_score == -1:
+                    best_score = score
+                    best_enc = enc
+            except (LookupError, UnicodeDecodeError):
+                continue
+
+        log.info(f"[RM2K] 自動偵測編碼: {best_enc} (替換字元數: {best_score})")
+        return best_enc
+
+    except Exception as e:
+        log.warning(f"[RM2K] 編碼偵測失敗，使用預設 cp932: {e}")
+        return "cp932"
 
 
 # ── BER codec ────────────────────────────────────────────────────────────────
