@@ -61,20 +61,8 @@ def run_import(game_path, import_encoding, message_queue):
             # --- 导入 RM2K 地图名/开关名/变量名/公共事件名 ---
             try:
                 from core.engines import rm2k
-                import os as _os
-                names_file = _os.path.join(game_path, rm2k.STRING_SCRIPTS_DIRNAME, rm2k.RM2K_NAMES_FILENAME)
-                if not _os.path.isfile(names_file):
-                    # RM2K_Names.txt 不存在（如已翻譯舊專案），自動偵測來源編碼並匯出
-                    message_queue.put(("log", ("normal", "未找到 RM2K_Names.txt，正在自動偵測編碼並匯出名稱...")))
-                    src_enc = rm2k.auto_detect_encoding(game_path)
-                    message_queue.put(("log", ("normal", f"  偵測到編碼: {src_enc}")))
-                    rm2k.export_names(game_path, src_enc, message_queue)
-                    message_queue.put(("warning",
-                        f"已自動生成 StringScripts/{rm2k.RM2K_NAMES_FILENAME}（來源編碼: {src_enc}），"
-                        "請翻譯後再次執行「導入」以寫回地圖名/開關名/變數名/公共事件名。"))
-                else:
-                    message_queue.put(("log", ("normal", "正在导入 RM2K 名称（地图/开关/变量/公共事件）...")))
-                    rm2k.import_names(game_path, import_encoding, message_queue)
+                message_queue.put(("log", ("normal", "正在导入 RM2K 名称（地图/开关/变量/公共事件）...")))
+                rm2k.import_names(game_path, import_encoding, message_queue)
             except Exception as rm2k_err:
                 log.exception("导入 RM2K 名称时发生错误。")
                 message_queue.put(("warning", f"导入 RM2K 名称失败（不影响主要导入结果）: {rm2k_err}"))

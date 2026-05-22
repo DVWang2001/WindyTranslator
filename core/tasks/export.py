@@ -44,6 +44,30 @@ def run_export(game_path, export_encoding, message_queue):
         message_queue.put(("status", f"正在导出文本 (编码: {export_encoding})..."))
         message_queue.put(("log", ("normal", f"步骤 1: 开始导出文本 (读取编码: {export_encoding})...")))
 
+        # --- 已翻譯舊專案：若 StringScripts 已存在但缺少 RM2K_Names.txt，補出名稱即可 ---
+        _ss_path = os.path.join(game_path, "StringScripts")
+        _names_path = os.path.join(_ss_path, "RM2K_Names.txt")
+        if os.path.isdir(_ss_path) and not os.path.isfile(_names_path):
+            message_queue.put(("log", ("normal",
+                "偵測到已翻譯專案（StringScripts 存在但無 RM2K_Names.txt），"
+                "跳過 RPGRewriter，僅補出地圖名/開關名/變數名/公共事件名...")))
+            try:
+                from core.engines import rm2k
+                src_enc = rm2k.auto_detect_encoding(game_path)
+                message_queue.put(("log", ("normal", f"  自動偵測來源編碼: {src_enc}")))
+                rm2k.export_names(game_path, src_enc, message_queue)
+                message_queue.put(("success",
+                    f"已生成 StringScripts/RM2K_Names.txt（來源編碼: {src_enc}），"
+                    "請翻譯後執行「導入」。"))
+                message_queue.put(("status", "名稱匯出完成"))
+            except Exception as _e:
+                log.exception("補出 RM2K 名稱時發生錯誤。")
+                message_queue.put(("error", f"補出 RM2K 名稱失敗: {_e}"))
+                message_queue.put(("status", "名稱匯出失敗"))
+            message_queue.put(("done", None))
+            return
+        # -----------------------------------------
+
         lmt_path = os.path.join(game_path, "RPG_RT.lmt")
         if not os.path.exists(lmt_path):
             message_queue.put(("error", f"未找到 RPG_RT.lmt 文件: {lmt_path}"))
