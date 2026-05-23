@@ -137,6 +137,12 @@ def _write_ber(n: int) -> bytes:
 
 def _parse_array(data: bytes, pos: int = 0) -> List[Tuple[int, Dict[int, bytes]]]:
     """Parse BER-count + N entries, each: [BER id][fields...][0x00]."""
+    entries, _ = _parse_array_end(data, pos)
+    return entries
+
+
+def _parse_array_end(data: bytes, pos: int = 0) -> Tuple[List[Tuple[int, Dict[int, bytes]]], int]:
+    """Like _parse_array but also returns the byte position immediately after the last entry."""
     count, pos = _read_ber(data, pos)
     entries: List[Tuple[int, Dict[int, bytes]]] = []
     for _ in range(count):
@@ -152,7 +158,7 @@ def _parse_array(data: bytes, pos: int = 0) -> List[Tuple[int, Dict[int, bytes]]
             fields[fk] = data[pos: pos + fs]
             pos += fs
         entries.append((eid, fields))
-    return entries
+    return entries, pos
 
 
 def _serialise_array(entries: List[Tuple[int, Dict[int, bytes]]]) -> bytes:
@@ -199,19 +205,26 @@ def _write_ldb(magic: bytes, sections: List[Tuple[int, bytes]]) -> bytes:
 
 # ── LMT helpers (flat array directly after magic) ────────────────────────────
 
-def _read_lmt(data: bytes) -> Tuple[bytes, List[Tuple[int, Dict[int, bytes]]]]:
-    """Return (magic_bytes, node_entries)."""
+def _read_lmt(data: bytes) -> Tuple[bytes, List[Tuple[int, Dict[int, bytes]]], bytes]:
+    """Return (magic_bytes, node_entries, tail_bytes).
+
+    tail_bytes holds everything after the node array — starting location,
+    active_node, vehicle positions, etc.  Must be written back verbatim.
+    """
     ml, pos = _read_ber(data, 0)
     magic = data[pos: pos + ml]
     pos += ml
-    entries = _parse_array(data, pos)
-    return magic, entries
+    entries, end_pos = _parse_array_end(data, pos)
+    tail = data[end_pos:]
+    return magic, entries, tail
 
 
-def _write_lmt(magic: bytes, entries: List[Tuple[int, Dict[int, bytes]]]) -> bytes:
+def _write_lmt(magic: bytes, entries: List[Tuple[int, Dict[int, bytes]]],
+               tail: bytes = b"") -> bytes:
     out = bytearray(_write_ber(len(magic)))
     out += magic
     out += _serialise_array(entries)
+    out += tail      # preserves starting location, active_node, vehicle data
     return bytes(out)
 
 
@@ -320,7 +333,7 @@ def export_names(game_path: str, encoding_code: str, message_queue=None) -> bool
     # ── LMT ──
     if os.path.isfile(lmt_path):
         try:
-            _, lmt_entries = _read_lmt(open(lmt_path, "rb").read())
+            _, lmt_entries, _ = _read_lmt(open(lmt_path, "rb").read())
             names[SEC_MAP_NAMES] = _extract_names(lmt_entries, enc, skip_zero=True)
             _log("normal", f"  [RM2K] 地圖名稱: {len(names[SEC_MAP_NAMES])} 個")
         except Exception as e:
@@ -426,7 +439,7 @@ def _encode_name(name: str, enc: str, label: str, _log) -> Optional[bytes]:
 
 def _patch_lmt(lmt_path: str, translations: Dict[int, str],
                enc: str, _log) -> bool:
-    magic, entries = _read_lmt(open(lmt_path, "rb").read())
+    magic, entries, lmt_tail = _read_lmt(open(lmt_path, "rb").read())
     new_entries = []
     count = 0
     for eid, fields in entries:
@@ -444,7 +457,7 @@ def _patch_lmt(lmt_path: str, translations: Dict[int, str],
 
     _backup(lmt_path, _log)
     with open(lmt_path, "wb") as f:
-        f.write(_write_lmt(magic, new_entries))
+        f.write(_write_lmt(magic, new_entries, lmt_tail))
     _log("success", f"  [RM2K] RPG_RT.lmt: 已更新 {count} 個地圖名稱")
     return True
 
