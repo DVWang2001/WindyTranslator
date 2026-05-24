@@ -11,13 +11,22 @@ import threading
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed # 使用 as_completed
 from core.api_clients import deepseek
-from core.utils import file_system, text_processing, default_database
+from core.utils import file_system, text_processing, default_database, control_tokens
+from core.utils.engine_detection import detect_game_engine
 from core.config import DEFAULT_WORLD_DICT_CONFIG, DEFAULT_TRANSLATE_CONFIG
 from collections import OrderedDict
 
 log = logging.getLogger(__name__)
 
 TRANSLATION_METADATA_PREFIX_RE = re.compile(r'^(?:\s*\[(?:MARKER|FACE):[^\]]+\]\s*)+')
+
+CONTROL_PLACEHOLDER_INSTRUCTION = """
+
+### 控制码占位符保护
+输入文本中的 PUA 字符（例如 \uE100、\uE101 以及同一区间的相似字符）代表游戏控制码。
+这些占位符不是文字内容，必须逐字保留，不能删除、复制、换序、替换、解释或翻译；占位符所在行也必须保持不变。
+普通日文引号（「」『』）不是控制码，可以按目标语言需要自然保留或调整。
+"""
 
 # --- 批量翻译工作单元 (与上一版几乎一致，增加了 current_processing_file_name 的使用) ---
 def _translate_batch_with_retry(
@@ -37,6 +46,8 @@ def _translate_batch_with_retry(
     target_language = config.get("target_language", "简体中文")
     max_retries = config.get("max_retries", 3)
     context_lines_config = config.get("context_lines", 10) 
+    apply_gbk_compatibility = config.get("_apply_gbk_compatibility_postprocess", True)
+    control_profile = config.get("_control_code_profile") or control_tokens.default_profile()
     min_batch_size = 1
     
     batch_original_texts_for_logging = [item["text_to_translate"] for item in batch_metadata_items]
@@ -52,9 +63,10 @@ def _translate_batch_with_retry(
     # 在批次范围内去重人物词典不一致的噪声告警（按 昵称-对应原名 配对）
     warned_missing_main_names = set()
 
-    processed_original_texts_for_glossary_matching = [
-        text_processing.pre_process_text_for_llm(item["text_to_translate"]) for item in batch_metadata_items
+    protected_batch_texts = [
+        control_tokens.protect_text(item["text_to_translate"], control_profile) for item in batch_metadata_items
     ]
+    processed_original_texts_for_glossary_matching = [protected.text for protected in protected_batch_texts]
     combined_processed_lower_for_glossary = "\n".join(processed_original_texts_for_glossary_matching).lower()
 
     for attempt in range(max_retries + 1):
@@ -115,7 +127,7 @@ def _translate_batch_with_retry(
             original_text_content = item_data["text_to_translate"]
             marker_type = item_data["original_marker"]
             speaker_id = item_data["speaker_id"] 
-            pua_processed_text = text_processing.pre_process_text_for_llm(original_text_content)
+            pua_processed_text = protected_batch_texts[i].text
             marker_tag_for_prompt = f"[MARKER: {marker_type}]"
             face_tag_for_prompt = ""
             if speaker_id: 
@@ -129,7 +141,7 @@ def _translate_batch_with_retry(
             source_language=source_language, target_language=target_language,
             character_glossary_section=character_glossary_section, entity_glossary_section=entity_glossary_section,
             context_section=context_section, batch_text=batch_text_for_prompt_payload
-        ) + timestamp_suffix
+        ) + CONTROL_PLACEHOLDER_INSTRUCTION + timestamp_suffix
 
         log.debug(f"调用 API 翻译批次 (文件: {current_processing_file_name or 'N/A'}, 大小: {current_batch_size}, 尝试 {attempt+1}/{max_retries+1})")
         current_api_messages_payload = [{"role": "user", "content": current_final_prompt_payload}]
@@ -221,17 +233,29 @@ def _translate_batch_with_retry(
                 result_key = original_item_data["original_json_key"] 
                 original_text_for_validation = original_item_data["text_to_translate"] # 这个仍然是用于翻译和验证的文本
                 raw_translation_for_this_item = final_translated_lines_from_api[i] 
-                restored_text_for_validation = text_processing.restore_pua_placeholders(raw_translation_for_this_item)
-                # 在验证前进行最小化修复，避免因模型引入/丢失控制码导致的频繁失败
-                repaired_text_for_validation = text_processing.repair_translation_format(
-                    original_text_for_validation, restored_text_for_validation
+                protected_text_for_item = protected_batch_texts[i]
+                restore_ok, restored_text_for_validation, restore_reason = control_tokens.restore_protected_text(
+                    raw_translation_for_this_item, protected_text_for_item
                 )
-                post_processed_text_for_validation = text_processing.post_process_translation(
-                    repaired_text_for_validation, original_text_for_validation
-                )
+                if restore_ok:
+                    # 在验证前进行最小化修复；控制码相关内容由 control_tokens 精确校验，不做猜测式修复。
+                    repaired_text_for_validation = text_processing.repair_translation_format(
+                        original_text_for_validation, restored_text_for_validation
+                    )
+                    post_processed_text_for_validation = text_processing.post_process_translation(
+                        repaired_text_for_validation,
+                        original_text_for_validation,
+                        apply_gbk_compatibility=apply_gbk_compatibility
+                    )
+                else:
+                    repaired_text_for_validation = restored_text_for_validation
+                    post_processed_text_for_validation = restored_text_for_validation
                 # 方案A：StringPicture 强制行数一致校验（包含空行）
                 marker_for_item = original_item_data.get("original_marker")
-                if marker_for_item == 'StringPicture':
+                if not restore_ok:
+                    is_line_valid = False
+                    line_validation_reason = f"控制码占位符还原失败: {restore_reason}"
+                elif marker_for_item == 'StringPicture':
                     orig_lines = original_text_for_validation.splitlines()
                     tran_lines = post_processed_text_for_validation.splitlines()
                     if len(orig_lines) != len(tran_lines):
@@ -394,15 +418,17 @@ def _translate_stringpicture_by_lines(
     error_log_lock,
 ):
     try:
+        control_profile = config.get("_control_code_profile") or control_tokens.default_profile()
         orig_lines = original_block_text.splitlines()
         # 仅对“有实质内容”的行送翻译：排除纯空白（含全角空格）
         non_empty_lines = [line for line in orig_lines if line.strip() != ""]
         if len(non_empty_lines) == 0:
             return True, original_block_text, original_block_text, ""
 
+        protected_lines = [control_tokens.protect_text(line, control_profile) for line in non_empty_lines]
         numbered_lines_for_prompt = []
         for idx, line in enumerate(non_empty_lines):
-            pua_processed = text_processing.pre_process_text_for_llm(line)
+            pua_processed = protected_lines[idx].text
             marker_tag = f"[MARKER: {marker_type}]"
             face_tag = f"[FACE: {speaker_id}]" if speaker_id else ""
             numbered_lines_for_prompt.append(f"{marker_tag} {face_tag} {idx+1}.{pua_processed}".strip())
@@ -415,7 +441,7 @@ def _translate_stringpicture_by_lines(
             entity_glossary_section=entity_glossary_section or "",
             context_section=context_section or "",
             batch_text=batch_text_for_prompt_payload
-        )
+        ) + CONTROL_PLACEHOLDER_INSTRUCTION
 
         api_messages = [{"role": "user", "content": final_prompt}]
         api_kwargs = {}
@@ -469,9 +495,16 @@ def _translate_stringpicture_by_lines(
         repaired_lines = []; post_processed_lines = []
         for idx, orig_line in enumerate(non_empty_lines, start=1):
             raw_tran = numbered_translations[idx]
-            restored = text_processing.restore_pua_placeholders(raw_tran)
+            restore_ok, restored, restore_reason = control_tokens.restore_protected_text(raw_tran, protected_lines[idx - 1])
+            if not restore_ok:
+                _log_batch_error(error_log_path, error_log_lock, "按行回退(控制码还原失败)", non_empty_lines, restore_reason, model_name, api_kwargs, api_messages, raw_textarea, 0, 0, failed_item_index=idx-1, raw_item_translation=raw_tran, file_name_for_log=current_processing_file_name)
+                return False, None, None, f"控制码还原失败: {restore_reason}"
             repaired = text_processing.repair_translation_format(orig_line, restored)
-            postp = text_processing.post_process_translation(repaired, orig_line)
+            postp = text_processing.post_process_translation(
+                repaired,
+                orig_line,
+                apply_gbk_compatibility=config.get("_apply_gbk_compatibility_postprocess", True)
+            )
             is_valid, reason = text_processing.validate_translation(orig_line, repaired, postp)
             if not is_valid:
                 _log_batch_error(error_log_path, error_log_lock, "按行回退(单行验证失败)", non_empty_lines, reason, model_name, api_kwargs, api_messages, raw_textarea, 0, 0, failed_item_index=idx-1, raw_item_translation=raw_tran, file_name_for_log=current_processing_file_name)
@@ -569,6 +602,55 @@ def _translation_worker(
     return source_file_name_for_worker, batch_processing_result
 
 
+def _load_existing_translated_data(translated_json_path):
+    """加载已有翻译结果，用于中断后续跑。"""
+    if not os.path.exists(translated_json_path):
+        return {}
+    try:
+        with open(translated_json_path, 'r', encoding='utf-8') as f_existing:
+            existing_data = json.load(f_existing)
+        if isinstance(existing_data, dict):
+            return existing_data
+        log.warning(f"已有翻译文件不是预期的字典结构，将忽略: {translated_json_path}")
+    except json.JSONDecodeError as decode_err:
+        log.warning(f"已有翻译文件无法解析，将忽略并重新生成: {translated_json_path} - {decode_err}")
+    except OSError as os_err:
+        log.warning(f"读取已有翻译文件失败，将忽略并重新生成: {translated_json_path} - {os_err}")
+    return {}
+
+
+def _is_reusable_translation_result(result_obj):
+    """仅复用已成功的译文；fallback 会在本轮重新尝试。"""
+    return (
+        isinstance(result_obj, dict)
+        and result_obj.get("status") == "success"
+        and isinstance(result_obj.get("text"), str)
+        and result_obj.get("text").strip() != ""
+    )
+
+
+def _reuse_translation_result(result_obj, metadata_obj):
+    reused = dict(result_obj)
+    reused["status"] = "success"
+    reused["failure_context"] = None
+    reused["original_marker"] = metadata_obj.get("original_marker", reused.get("original_marker", "UnknownMarker"))
+    reused["speaker_id"] = metadata_obj.get("speaker_id", reused.get("speaker_id"))
+    return reused
+
+
+def _save_translation_results_atomic(translated_json_path, untranslated_data, translated_data):
+    """按原始顺序原子写入翻译结果，避免中途退出留下半截 JSON。"""
+    file_system.ensure_dir_exists(os.path.dirname(translated_json_path))
+    reordered_results = _reorder_translation_results(untranslated_data, translated_data)
+    tmp_path = f"{translated_json_path}.tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f_json_out:
+        json.dump(reordered_results, f_json_out, ensure_ascii=False, indent=4)
+        f_json_out.flush()
+        os.fsync(f_json_out.fileno())
+    os.replace(tmp_path, translated_json_path)
+    return reordered_results
+
+
 # --- 主任务函数 ---
 def run_translate(game_path, works_dir, translate_config, world_dict_config, message_queue):
     start_time = time.time()
@@ -605,6 +687,22 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
         
         if not untranslated_data_per_file:
             message_queue.put(("warning", "未翻译的 JSON 文件为空或无效，无需翻译。")); message_queue.put(("status", "翻译跳过(无内容)")); message_queue.put(("done", None)); return
+
+        existing_translated_data = _load_existing_translated_data(translated_json_path)
+        existing_success_count = 0
+        if existing_translated_data:
+            for file_name, data_for_this_file in untranslated_data_per_file.items():
+                existing_file_data = existing_translated_data.get(file_name, {})
+                if not isinstance(existing_file_data, dict) or not isinstance(data_for_this_file, dict):
+                    continue
+                existing_success_count += sum(
+                    1 for original_json_key in data_for_this_file.keys()
+                    if _is_reusable_translation_result(existing_file_data.get(original_json_key))
+                )
+            if existing_success_count > 0:
+                message_queue.put(("log", ("normal", f"检测到已有翻译结果，可续跑复用 {existing_success_count} 条成功译文。")))
+            else:
+                message_queue.put(("log", ("normal", "检测到已有翻译文件，但没有可复用的成功译文。")))
         
         # --- 加载词典 (全局共享) ---
         char_dict_filename = world_dict_config.get("character_dict_filename", DEFAULT_WORLD_DICT_CONFIG["character_dict_filename"])
@@ -626,6 +724,16 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
 
         # --- 获取翻译配置 ---
         current_translate_config = translate_config.copy()
+        detected_game = detect_game_engine(game_path)
+        apply_gbk_compatibility = not detected_game or detected_game.engine == "rm200x"
+        current_translate_config["_apply_gbk_compatibility_postprocess"] = apply_gbk_compatibility
+        control_profile = control_tokens.profile_from_game(game_path)
+        current_translate_config["_control_code_profile"] = control_profile
+        if detected_game and not apply_gbk_compatibility:
+            message_queue.put(("log", ("normal", f"检测到 {detected_game.engine}：跳过 RM2000/2003 的 GBK 字符兼容化后处理。")))
+        else:
+            message_queue.put(("log", ("normal", "启用 RM2000/2003 的 GBK 字符兼容化后处理。")))
+        message_queue.put(("log", ("normal", f"控制码保护配置: {control_profile.summary}")))
         api_url = current_translate_config.get("api_url", "").strip()
         api_key = current_translate_config.get("api_key", "").strip()
         model_name = current_translate_config.get("model", "").strip()
@@ -651,6 +759,7 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
         overall_total_items_in_all_files = 0
         overall_default_db_prefilled_count = 0
         overall_no_content_prefilled_count = 0
+        overall_resumed_success_count = 0
 
         message_queue.put(("log", ("normal", "开始预切分所有翻译任务...")))
         for file_name, data_for_this_file in untranslated_data_per_file.items():
@@ -662,6 +771,10 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
             items_with_original_key_for_this_file = []
             prefilled_count_for_this_file = 0
             no_content_prefilled_for_this_file = 0
+            resumed_count_for_this_file = 0
+            existing_file_translations = existing_translated_data.get(file_name, {})
+            if not isinstance(existing_file_translations, dict):
+                existing_file_translations = {}
             for original_json_key, metadata_obj in data_for_this_file.items():
                 # 确保元数据对象中有一个字段存储这个原始的JSON键
                 metadata_obj['original_json_key'] = original_json_key 
@@ -705,6 +818,16 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
                         no_content_prefilled_for_this_file += 1
                         continue
 
+                existing_result_obj = existing_file_translations.get(original_json_key)
+                if _is_reusable_translation_result(existing_result_obj):
+                    all_files_translated_data.setdefault(file_name, {})
+                    all_files_translated_data[file_name][original_json_key] = _reuse_translation_result(
+                        existing_result_obj,
+                        metadata_obj
+                    )
+                    resumed_count_for_this_file += 1
+                    continue
+
                 items_with_original_key_for_this_file.append(metadata_obj)
 
             all_metadata_items_for_this_file = items_with_original_key_for_this_file
@@ -713,6 +836,7 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
             overall_default_db_prefilled_count += prefilled_count_for_this_file
             # 同步累计“无需翻译”预填数量，排除在需译计数之外
             overall_no_content_prefilled_count += no_content_prefilled_for_this_file
+            overall_resumed_success_count += resumed_count_for_this_file
             
             # 预先为这个文件在最终结果字典中创建条目
             all_files_translated_data.setdefault(file_name, {})
@@ -734,13 +858,30 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
                 })
         
         if not global_translation_tasks:
+            try:
+                all_files_translated_data = _save_translation_results_atomic(
+                    translated_json_path,
+                    untranslated_data_per_file,
+                    all_files_translated_data
+                )
+            except Exception as checkpoint_err:
+                log.exception(f"保存续跑结果失败: {checkpoint_err}")
+                message_queue.put(("error", f"保存续跑结果失败: {checkpoint_err}"))
+                message_queue.put(("status", "翻译失败(保存错误)")); message_queue.put(("done", None)); return
+
+            if overall_resumed_success_count > 0:
+                message_queue.put(("success", f"所有条目已有成功译文，已复用 {overall_resumed_success_count} 条并完成续跑。"))
+                message_queue.put(("status", "翻译全部完成(续跑复用)")); message_queue.put(("progress", 100.0)); message_queue.put(("done", None)); return
+
             message_queue.put(("warning", "所有文件均为空，或未提取到任何可翻译条目。无需翻译。"))
-            message_queue.put(("status", "翻译跳过(无内容)")); message_queue.put(("done", None)); return
+            message_queue.put(("status", "翻译跳过(无内容)")); message_queue.put(("progress", 100.0)); message_queue.put(("done", None)); return
 
         total_batches_to_process = len(global_translation_tasks)
         # overall_total_items_in_all_files 已经是过滤后需要API翻译的条目数（不包含预填充和无需翻译的）
         total_need_translate = overall_total_items_in_all_files
         message_queue.put(("log", ("normal", f"任务预切分完成。共 {total_batches_to_process} 个批次（来自 {len(untranslated_data_per_file)} 个文件），总计 {total_need_translate} 个需翻译原文条目。")))
+        if overall_resumed_success_count > 0:
+            message_queue.put(("log", ("normal", f"续跑已跳过 {overall_resumed_success_count} 条已有成功译文。")))
         if overall_default_db_prefilled_count > 0:
             message_queue.put(("log", ("normal", f"按默认数据库规则自动填充 {overall_default_db_prefilled_count} 条模板词条译文，避免重复请求 API。")))
         if overall_no_content_prefilled_count > 0:
@@ -812,6 +953,16 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
                             "original_marker": item_data_in_failed_batch["original_marker"], 
                             "speaker_id": item_data_in_failed_batch["speaker_id"]
                         }
+
+                try:
+                    all_files_translated_data = _save_translation_results_atomic(
+                        translated_json_path,
+                        untranslated_data_per_file,
+                        all_files_translated_data
+                    )
+                except Exception as checkpoint_save_err:
+                    log.exception(f"保存翻译续跑检查点失败: {checkpoint_save_err}")
+                    message_queue.put(("warning", f"保存翻译续跑检查点失败，本轮会继续但下次可能需要重翻最近批次: {checkpoint_save_err}"))
                 
                 completed_batches_count += 1
                 processed_items_count += num_items_in_this_batch
@@ -894,14 +1045,13 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
         # --- 保存最终的按文件组织的翻译JSON ---
         message_queue.put(("log", ("normal", f"正在保存按文件组织的翻译结果到: {translated_json_path}")))
         try:
-            file_system.ensure_dir_exists(os.path.dirname(translated_json_path))
-            
             # 在保存前重排序结果
             message_queue.put(("log", ("normal", "正在重排序翻译结果以匹配原始文件顺序...")))
-            all_files_translated_data = _reorder_translation_results(untranslated_data_per_file, all_files_translated_data)
-            
-            with open(translated_json_path, 'w', encoding='utf-8') as f_json_final_out:
-                json.dump(all_files_translated_data, f_json_final_out, ensure_ascii=False, indent=4)
+            all_files_translated_data = _save_translation_results_atomic(
+                translated_json_path,
+                untranslated_data_per_file,
+                all_files_translated_data
+            )
             
             total_elapsed_time_overall = time.time() - start_time
             message_queue.put(("log", ("success", f"所有文件的翻译及保存完成。总耗时: {total_elapsed_time_overall:.2f} 秒。")))
