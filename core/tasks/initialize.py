@@ -190,7 +190,7 @@ def _update_rpg_rt_ini(ini_path, target_encoding_code='936'):
         return False # 表示未修改
 
 # --- 主任务函数 ---
-def run_initialize(game_path, rtp_options, message_queue):
+def run_initialize(game_path, rtp_options, import_encoding, message_queue):
     """
     执行游戏初始化流程：复制 EasyRPG，安装 RTP，转换编码，更新 ini。
 
@@ -252,8 +252,8 @@ def run_initialize(game_path, rtp_options, message_queue):
 
         # 4. 检查并更新 RPG_RT.ini
         ini_path = os.path.join(game_path, "RPG_RT.ini")
-        message_queue.put(("log", ("normal", "检查并更新 RPG_RT.ini 配置...")))
-        _update_rpg_rt_ini(ini_path, target_encoding_code='936') # 936 代表 GBK
+        message_queue.put(("log", ("normal", f"检查并更新 RPG_RT.ini 配置 (编码: {import_encoding})...")))
+        _update_rpg_rt_ini(ini_path, target_encoding_code=import_encoding)
 
         message_queue.put(("success", "初始化完成"))
         message_queue.put(("status", "初始化完成"))

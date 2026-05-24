@@ -157,7 +157,7 @@ class RPGTranslatorApp:
         # 根据 task_name 选择任务函数和参数
         if task_name == 'initialize':
             task_func = initialize.run_initialize
-            task_args = [current_game_path, rtp_options, self.message_queue]
+            task_args = [current_game_path, rtp_options, import_encoding, self.message_queue]
         elif task_name == 'rename':
             task_func = rename.run_rename
             task_args = [current_game_path, self.executable_dir, rewrite_rtp_fix, self.message_queue]

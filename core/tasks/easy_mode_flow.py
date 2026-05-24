@@ -39,7 +39,7 @@ def run_easy_flow(
     total_steps = 8 # 定义总步骤数
 
     steps = [
-        {"name": "初始化", "func": initialize.run_initialize, "args": [game_path, rtp_options, message_queue]},
+        {"name": "初始化", "func": initialize.run_initialize, "args": [game_path, rtp_options, import_encoding, message_queue]},
         {"name": "导出文本", "func": export.run_export, "args": [game_path, export_encoding, message_queue]},
         {"name": "重写文件名", "func": rename.run_rename, "args": [game_path, program_dir, rewrite_rtp_fix, message_queue]},
         {"name": "制作JSON文件", "func": json_creation.run_create_json, "args": [game_path, works_dir, message_queue]},
