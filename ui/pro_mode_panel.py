@@ -132,6 +132,17 @@ class ProModePanel(ttk.Frame):
         all_controls_list.extend([self.translate_button, self.deepseek_config_button])
         row_idx += 1
 
+        # --- 5b. g4f 翻译 (免 API Key) ---
+        row_frame_5b = create_row(self, "5b. g4f翻译", "免API Key，使用GPT4Free翻译")
+        self.g4f_translate_button = ttk.Button(row_frame_5b, text="执行", width=button_width,
+                                               command=lambda: self.app.start_task('translate_g4f'))
+        self.g4f_translate_button.pack(side=tk.RIGHT, padx=padx_val)
+        self.g4f_config_button = ttk.Button(row_frame_5b, text="配置", width=config_button_width,
+                                            command=lambda: self.app.start_task('configure_g4f'))
+        self.g4f_config_button.pack(side=tk.RIGHT, padx=padx_val)
+        all_controls_list.extend([self.g4f_translate_button, self.g4f_config_button])
+        row_idx += 1
+
         # --- 6. 释放JSON文件 ---
         row_frame_6 = create_row(self, "6. 释放JSON文件", "翻译后 JSON 释放到 StringScripts")
         self.release_json_button = ttk.Button(row_frame_6, text="执行", width=button_width,

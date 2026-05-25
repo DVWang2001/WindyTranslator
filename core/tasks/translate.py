@@ -10,7 +10,7 @@ import queue # 虽然主进度通信可能不再直接依赖它，但保留以�
 import threading
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed # 使用 as_completed
-from core.api_clients import deepseek
+from core.api_clients import deepseek, g4f_client
 from core.utils import file_system, text_processing, default_database, control_tokens
 from core.utils.engine_detection import detect_game_engine
 from core.config import DEFAULT_WORLD_DICT_CONFIG, DEFAULT_TRANSLATE_CONFIG
@@ -744,11 +744,22 @@ def run_translate(game_path, works_dir, translate_config, world_dict_config, mes
         # 判断是否为日语源语言（粗略检查：包含 “日”，或以 ja 开头，或包含 'japanese'）
         src_lang_lc = str(source_language_cfg).lower()
         is_source_language_japanese = ("日" in str(source_language_cfg)) or src_lang_lc.startswith("ja") or ("japanese" in src_lang_lc)
-        if not api_url or not api_key or not model_name:
-             raise ValueError("翻译API 配置不完整 (URL, Key, Model)。")
-
-        try: api_client_instance = deepseek.DeepSeekClient(api_url, api_key)
-        except Exception as client_err: raise ConnectionError(f"初始化 API 客户端失败: {client_err}")
+        provider = current_translate_config.get("provider", "").strip().lower()
+        if provider == "g4f":
+            if not model_name:
+                raise ValueError("翻译配置不完整 (Model)。")
+            try:
+                g4f_provider_name = current_translate_config.get("g4f_provider", "").strip() or None
+                api_client_instance = g4f_client.G4FClient(g4f_provider_name)
+            except Exception as client_err:
+                raise ConnectionError(f"初始化 g4f 客户端失败: {client_err}")
+        else:
+            if not api_url or not api_key or not model_name:
+                raise ValueError("翻译API 配置不完整 (URL, Key, Model)。")
+            try:
+                api_client_instance = deepseek.DeepSeekClient(api_url, api_key)
+            except Exception as client_err:
+                raise ConnectionError(f"初始化 API 客户端失败: {client_err}")
         message_queue.put(("log", ("normal", f"API客户端初始化成功。翻译配置: 模型={model_name}, 并发={concurrency_config}, 批大小={batch_size_config}, 上下文行数={context_lines_count}")))
 
         # --- 默认数据库过滤与自动填充准备（固定启用，读取 modules/dict） ---

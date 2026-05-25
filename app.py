@@ -135,7 +135,7 @@ class RPGTranslatorApp:
 
         # --- 修改：检查路径时使用 current_game_path ---
         if not current_game_path and task_name not in [
-            'configure_gemini', 'configure_deepseek', 'select_rtp',
+            'configure_gemini', 'configure_deepseek', 'configure_g4f', 'select_rtp',
             # 'open_base_dict_editor' 是直接方法调用，不在这里处理
         ]:
             if not self._check_game_path_set(current_game_path): return # <--- 传递 current_game_path
@@ -173,6 +173,10 @@ class RPGTranslatorApp:
         elif task_name == 'translate':
             task_func = translate.run_translate
             task_args = [current_game_path, self.works_dir, translate_config, world_dict_config, self.message_queue]
+        elif task_name == 'translate_g4f':
+            g4f_config = self.config.get('g4f_config', {})
+            task_func = translate.run_translate
+            task_args = [current_game_path, self.works_dir, g4f_config, world_dict_config, self.message_queue]
         elif task_name == 'release_json':
             json_files = self._find_translated_json_files(current_game_path) # <--- 传递 current_game_path
             if not json_files:
@@ -257,6 +261,9 @@ class RPGTranslatorApp:
              return
         elif task_name == 'configure_deepseek':
              self._open_deepseek_config() # 直接调用内部方法
+             return
+        elif task_name == 'configure_g4f':
+             self._open_g4f_config()
              return
         elif task_name == 'select_rtp':
              self._open_rtp_selection() # 直接调用内部方法
@@ -634,6 +641,14 @@ class RPGTranslatorApp:
         """打开 DeepSeek 配置窗口。"""
         from ui.config_dialogs import TranslateConfigWindow # 导入配置窗口类
         TranslateConfigWindow(self.root, self, self.config['translate_config'])
+
+    def _open_g4f_config(self):
+        """打开 g4f 配置窗口。"""
+        from ui.config_dialogs import G4FConfigWindow
+        from core.config import DEFAULT_G4F_CONFIG
+        if 'g4f_config' not in self.config:
+            self.config['g4f_config'] = DEFAULT_G4F_CONFIG.copy()
+        G4FConfigWindow(self.root, self, self.config['g4f_config'])
 
     def _open_rtp_selection(self):
         """打开 RTP 选择窗口。"""

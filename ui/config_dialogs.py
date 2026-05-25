@@ -708,3 +708,184 @@ class TranslateConfigWindow(tk.Toplevel):
         self.destroy()
 
 
+# --- g4f 配置窗口 ---
+
+class G4FConfigWindow(tk.Toplevel):
+    """g4f (GPT4Free) 翻译配置对话框，无需 API Key。"""
+
+    _G4F_PROVIDERS = [
+        "（自动选择）",
+        "Copilot", "DeepSeek", "Gemini", "GeminiPro",
+        "Blackbox", "DDG", "You", "PerplexityLabs",
+        "Pizzagpt", "FreeChatgpt",
+    ]
+
+    def __init__(self, parent, app_controller, g4f_config):
+        super().__init__(parent)
+        self.app = app_controller
+        self.config = g4f_config
+
+        self.initializing = True
+
+        self.title("g4f (GPT4Free) 翻译配置")
+        self.geometry("600x520")
+        self.transient(parent)
+        self.grab_set()
+
+        from core.config import DEFAULT_G4F_CONFIG
+        self._defaults = DEFAULT_G4F_CONFIG
+
+        # --- 变量 ---
+        raw_provider = self.config.get("g4f_provider", "") or ""
+        self.provider_var = tk.StringVar(
+            value=raw_provider if raw_provider else "（自动选择）"
+        )
+        self.model_var = tk.StringVar(value=self.config.get("model", self._defaults["model"]))
+        self.batch_var = tk.IntVar(value=self.config.get("batch_size", self._defaults["batch_size"]))
+        self.context_var = tk.IntVar(value=self.config.get("context_lines", self._defaults["context_lines"]))
+        self.concur_var = tk.IntVar(value=self.config.get("concurrency", self._defaults["concurrency"]))
+        self.source_lang_var = tk.StringVar(value=self.config.get("source_language", self._defaults["source_language"]))
+        self.target_lang_var = tk.StringVar(value=self.config.get("target_language", self._defaults["target_language"]))
+        self.status_var = tk.StringVar(value="g4f 无需 API Key，可直接保存或先测试连接")
+
+        # --- 布局 ---
+        frame = ttk.Frame(self, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        frame.columnconfigure(1, weight=1)
+
+        row_idx = 0
+
+        # Provider
+        ttk.Label(frame, text="Provider:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
+        self.provider_combo = ttk.Combobox(
+            frame, textvariable=self.provider_var,
+            values=self._G4F_PROVIDERS, width=30,
+        )
+        self.provider_combo.grid(row=row_idx, column=1, padx=5, pady=5, sticky="ew")
+        ttk.Label(frame, text="（留空 = 自动）", foreground="gray").grid(row=row_idx, column=2, padx=5, sticky="w")
+        row_idx += 1
+
+        # Model
+        ttk.Label(frame, text="模型名称:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
+        model_combo = ttk.Combobox(frame, textvariable=self.model_var, values=[
+            "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-3.5-turbo",
+            "gemini-pro", "gemini-1.5-flash", "deepseek-chat",
+        ], width=30)
+        model_combo.grid(row=row_idx, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+        row_idx += 1
+
+        # Spinboxes
+        spinbox_frame = ttk.Frame(frame)
+        spinbox_frame.grid(row=row_idx, column=0, columnspan=3, padx=0, pady=5, sticky="w")
+        ttk.Label(spinbox_frame, text="批次大小:").pack(side=tk.LEFT, padx=(5, 2))
+        ttk.Spinbox(spinbox_frame, from_=1, to=50, textvariable=self.batch_var, width=5).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(spinbox_frame, text="上文行数:").pack(side=tk.LEFT, padx=(5, 2))
+        ttk.Spinbox(spinbox_frame, from_=0, to=50, textvariable=self.context_var, width=5).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(spinbox_frame, text="并发数:").pack(side=tk.LEFT, padx=(5, 2))
+        ttk.Spinbox(spinbox_frame, from_=1, to=8, textvariable=self.concur_var, width=5).pack(side=tk.LEFT, padx=(0, 5))
+        row_idx += 1
+
+        # Language
+        lang_frame = ttk.Frame(frame)
+        lang_frame.grid(row=row_idx, column=0, columnspan=3, padx=0, pady=5, sticky="ew")
+        lang_frame.columnconfigure(1, weight=1)
+        lang_frame.columnconfigure(3, weight=1)
+        ttk.Label(lang_frame, text="源语言:").grid(row=0, column=0, padx=5, sticky="w")
+        ttk.Combobox(lang_frame, textvariable=self.source_lang_var, values=[
+            "日语", "英语", "简体中文", "繁体中文", "韩语",
+        ], width=15, state="readonly").grid(row=0, column=1, padx=5, sticky="ew")
+        ttk.Label(lang_frame, text="目标语言:").grid(row=0, column=2, padx=(10, 5), sticky="w")
+        ttk.Combobox(lang_frame, textvariable=self.target_lang_var, values=[
+            "简体中文", "繁体中文", "英语", "日语", "韩语",
+        ], width=15, state="readonly").grid(row=0, column=3, padx=5, sticky="ew")
+        row_idx += 1
+
+        # Prompt
+        prompt_frame = ttk.LabelFrame(frame, text="Prompt 模板", padding="5")
+        prompt_frame.grid(row=row_idx, column=0, columnspan=3, padx=5, pady=5, sticky="nsew")
+        frame.rowconfigure(row_idx, weight=1)
+        prompt_frame.columnconfigure(0, weight=1)
+        prompt_frame.rowconfigure(0, weight=1)
+        self.prompt_text = scrolledtext.ScrolledText(prompt_frame, wrap=tk.WORD, height=8)
+        self.prompt_text.grid(row=0, column=0, sticky="nsew")
+        self.prompt_text.insert(tk.END, self.config.get("prompt_template", self._defaults["prompt_template"]))
+        self.prompt_text.edit_modified(False)
+        row_idx += 1
+
+        # Status
+        self.status_label = ttk.Label(frame, textvariable=self.status_var, foreground="gray")
+        self.status_label.grid(row=row_idx, column=0, columnspan=3, padx=5, pady=(5, 0), sticky="ew")
+        row_idx += 1
+
+        # Buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=row_idx, column=0, columnspan=3, pady=10, sticky="e")
+        self.test_button = ttk.Button(btn_frame, text="测试连接", command=self._test_connection)
+        self.test_button.pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="保存", command=self._save_config).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="取消", command=self.destroy).pack(side=tk.LEFT, padx=5)
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.initializing = False
+
+    def _set_status(self, message, color="gray"):
+        if self.winfo_exists():
+            self.status_var.set(message)
+            self.status_label.config(foreground=color)
+
+    def _test_connection(self):
+        model = self.model_var.get().strip()
+        if not model:
+            messagebox.showerror("错误", "请输入模型名称", parent=self)
+            return
+        provider_raw = self.provider_var.get().strip()
+        provider = None if provider_raw in ("", "（自动选择）") else provider_raw
+        self._set_status("正在测试 g4f 连接（首次可能较慢）...", "blue")
+        self.test_button.config(state=tk.DISABLED)
+        threading.Thread(
+            target=self._test_thread, args=(model, provider), daemon=True
+        ).start()
+
+    def _test_thread(self, model, provider):
+        try:
+            from core.api_clients.g4f_client import G4FClient
+            client = G4FClient(provider)
+            success, message = client.test_connection(model)
+            self.after(0, lambda: self._test_result(success, message))
+        except Exception as e:
+            self.after(0, lambda: self._test_result(False, str(e)))
+
+    def _test_result(self, success, message):
+        if not self.winfo_exists():
+            return
+        self.test_button.config(state=tk.NORMAL)
+        if success:
+            self._set_status("连接成功！", "green")
+            messagebox.showinfo("成功", message, parent=self)
+        else:
+            self._set_status(f"连接失败: {message}", "red")
+            messagebox.showerror("连接失败", message, parent=self)
+
+    def _save_config(self):
+        provider_raw = self.provider_var.get().strip()
+        self.config["provider"] = "g4f"
+        self.config["g4f_provider"] = "" if provider_raw in ("", "（自动选择）") else provider_raw
+        self.config["model"] = self.model_var.get().strip()
+        try:
+            self.config["batch_size"] = max(1, min(50, int(self.batch_var.get())))
+        except ValueError:
+            self.config["batch_size"] = self._defaults["batch_size"]
+        try:
+            self.config["context_lines"] = max(0, min(50, int(self.context_var.get())))
+        except ValueError:
+            self.config["context_lines"] = self._defaults["context_lines"]
+        try:
+            self.config["concurrency"] = max(1, min(8, int(self.concur_var.get())))
+        except ValueError:
+            self.config["concurrency"] = self._defaults["concurrency"]
+        self.config["source_language"] = self.source_lang_var.get()
+        self.config["target_language"] = self.target_lang_var.get()
+        self.config["prompt_template"] = self.prompt_text.get("1.0", tk.END).strip()
+        self.app.save_config()
+        log.info("g4f 翻译配置已更新。")
+        self.destroy()

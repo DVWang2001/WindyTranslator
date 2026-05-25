@@ -9,6 +9,14 @@ from core.utils.engine_detection import detect_game_engine
 
 log = logging.getLogger(__name__)
 
+# Windows code page -> Python codec name
+_CODEPAGE_TO_CODEC = {
+    '932':  'cp932',
+    '936':  'gbk',
+    '950':  'big5',
+    '1252': 'cp1252',
+}
+
 # 定义支持的日文编码（用于检测）
 JAPANESE_ENCODINGS = ['shift_jis', 'cp932', 'euc_jp']
 # 定义假名匹配模式
@@ -81,14 +89,14 @@ def _detect_and_convert_encoding(file_path, target_encoding='gbk'):
         return False, None
 
 
-def _update_rpg_rt_ini(ini_path, target_encoding_code='936'):
+def _update_rpg_rt_ini(ini_path, target_encoding_code='936', file_encoding='gbk'):
     """
-    检查并更新 RPG_RT.ini 文件，确保 FullPackageFlag=1 和 Encoding=936 存在。
-    假设 ini 文件已被转换为 GBK 编码。
+    检查并更新 RPG_RT.ini 文件，确保 FullPackageFlag=1 和 Encoding=<code> 存在。
 
     Args:
         ini_path (str): RPG_RT.ini 文件的路径。
-        target_encoding_code (str): EasyRPG 期望的编码代号。
+        target_encoding_code (str): EasyRPG 期望的编码代号（Windows code page）。
+        file_encoding (str): 读写 ini 文件时使用的 Python codec 名称。
     """
     if not os.path.exists(ini_path):
         log.warning(f"未找到 RPG_RT.ini 文件，跳过配置修改: {ini_path}")
@@ -98,8 +106,7 @@ def _update_rpg_rt_ini(ini_path, target_encoding_code='936'):
     needs_write = False
     lines = []
     try:
-        # 假设文件已被之前的步骤转换为 gbk
-        with open(ini_path, 'r', encoding='gbk', errors='replace') as f:
+        with open(ini_path, 'r', encoding=file_encoding, errors='replace') as f:
             lines = f.readlines()
     except Exception as e:
         log.error(f"读取 RPG_RT.ini 文件失败 ({ini_path}): {e}")
@@ -177,7 +184,7 @@ def _update_rpg_rt_ini(ini_path, target_encoding_code='936'):
                  if line.strip().startswith('[') and i > 0 and final_output_lines[i-1].strip():
                      formatted_lines.insert(-1, '\n') # 在段落前插入空行
 
-            with open(ini_path, 'w', encoding='gbk', errors='replace') as f:
+            with open(ini_path, 'w', encoding=file_encoding, errors='replace') as f:
                 # f.writelines(final_output_lines)
                 f.writelines(formatted_lines) # 使用格式化后的行
             log.info("RPG_RT.ini 更新完成。")
@@ -240,8 +247,11 @@ def run_initialize(game_path, rtp_options, import_encoding, message_queue):
         else:
             message_queue.put(("log", ("warning", "未选择任何 RTP 文件进行安装。")))
 
-        # 3. 转换文本文件编码 (日文 Shift-JIS/EUC-JP -> GBK)
-        message_queue.put(("log", ("normal", "检查并转换文本文件编码 (日文 -> GBK)...")))
+        # 将 Windows code page 转换为 Python codec 名称
+        target_codec = _CODEPAGE_TO_CODEC.get(str(import_encoding), 'gbk')
+
+        # 3. 转换文本文件编码 (日文 Shift-JIS/EUC-JP -> 目标编码)
+        message_queue.put(("log", ("normal", f"检查并转换文本文件编码 (日文 -> {target_codec})...")))
         converted_count = 0
         checked_count = 0
         target_files = [item for item in os.listdir(game_path)
@@ -251,7 +261,7 @@ def run_initialize(game_path, rtp_options, import_encoding, message_queue):
         for filename in target_files:
             file_path = os.path.join(game_path, filename)
             checked_count += 1
-            converted, _ = _detect_and_convert_encoding(file_path, target_encoding='gbk')
+            converted, _ = _detect_and_convert_encoding(file_path, target_encoding=target_codec)
             if converted:
                 converted_count += 1
         message_queue.put(("log", ("success", f"编码检查完成: 检查 {checked_count} 个文件，转换 {converted_count} 个。")))
@@ -259,7 +269,7 @@ def run_initialize(game_path, rtp_options, import_encoding, message_queue):
         # 4. 检查并更新 RPG_RT.ini
         ini_path = os.path.join(game_path, "RPG_RT.ini")
         message_queue.put(("log", ("normal", f"检查并更新 RPG_RT.ini 配置 (编码: {import_encoding})...")))
-        _update_rpg_rt_ini(ini_path, target_encoding_code=import_encoding)
+        _update_rpg_rt_ini(ini_path, target_encoding_code=import_encoding, file_encoding=target_codec)
 
         message_queue.put(("success", "初始化完成"))
         message_queue.put(("status", "初始化完成"))
