@@ -17,6 +17,8 @@ log = logging.getLogger(__name__)
 
 PROVIDER_GEMINI = 'gemini'
 PROVIDER_OPENAI = 'openai'
+PROVIDER_NVIDIA_NIM = 'nvidia_nim'
+_OPENAI_COMPAT_PROVIDERS = (PROVIDER_OPENAI, PROVIDER_NVIDIA_NIM)
 
 DEFAULT_DICT_MAX_PROMPT_CHARS = 500_000
 DEFAULT_DICT_CHUNK_OVERLAP_LINES = 10
@@ -689,15 +691,20 @@ def run_generate_dictionary(game_path, works_dir, world_dict_config, message_que
         enable_base_dict = world_dict_config.get("enable_base_dictionary", True)
         provider_raw = world_dict_config.get("provider", PROVIDER_GEMINI)
         provider = (provider_raw or PROVIDER_GEMINI).strip().lower()
-        if provider not in (PROVIDER_GEMINI, PROVIDER_OPENAI):
+        if provider not in (PROVIDER_GEMINI,) + _OPENAI_COMPAT_PROVIDERS:
             raise ValueError(f"不支持的字典模型提供方: {provider_raw}")
-        provider_display = "Gemini API" if provider == PROVIDER_GEMINI else "OpenAI 兼容 API"
+        if provider == PROVIDER_GEMINI:
+            provider_display = "Gemini API"
+        elif provider == PROVIDER_NVIDIA_NIM:
+            provider_display = "NVIDIA NIM"
+        else:
+            provider_display = "OpenAI 兼容 API"
         api_url = world_dict_config.get("api_url", "").strip()
         openai_temperature = world_dict_config.get("openai_temperature", 0.2)
         openai_max_tokens = world_dict_config.get("openai_max_tokens")
         openai_extra_params = world_dict_config.get("openai_extra_params", {})
         pipeline_config = _get_pipeline_config(world_dict_config)
-        if provider == PROVIDER_OPENAI:
+        if provider in _OPENAI_COMPAT_PROVIDERS:
             try:
                 openai_temperature = float(openai_temperature)
             except (TypeError, ValueError):
@@ -718,8 +725,8 @@ def run_generate_dictionary(game_path, works_dir, world_dict_config, message_que
         # --- 检查配置 ---
         if not api_key:
             raise ValueError(f"{provider_display} Key 未配置。")
-        if provider == PROVIDER_OPENAI and not api_url:
-            raise ValueError("OpenAI 兼容 API 基础地址 (api_url) 未配置。")
+        if provider in _OPENAI_COMPAT_PROVIDERS and not api_url:
+            raise ValueError(f"{provider_display} 基础地址 (api_url) 未配置。")
         if not model_name:
             raise ValueError("字典模型名称未配置。")
         if not char_prompt_template:

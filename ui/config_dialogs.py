@@ -13,6 +13,17 @@ log = logging.getLogger(__name__)
 
 PROVIDER_GEMINI = 'gemini'
 PROVIDER_OPENAI = 'openai'
+PROVIDER_NVIDIA_NIM = 'nvidia_nim'
+
+NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
+NVIDIA_NIM_MODELS = [
+    "meta/llama-3.3-70b-instruct",
+    "meta/llama-3.1-405b-instruct",
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "google/gemma-2-27b-it",
+    "mistralai/mistral-large-2-instruct",
+    "deepseek-ai/deepseek-r1",
+]
 
 # --- 世界观字典配置窗口 ---
 
@@ -31,6 +42,7 @@ class WorldDictConfigWindow(tk.Toplevel):
         self.provider_display_map = {
             PROVIDER_GEMINI: "Google Gemini 原生",
             PROVIDER_OPENAI: "OpenAI 兼容端点",
+            PROVIDER_NVIDIA_NIM: "NVIDIA NIM",
         }
         self.provider_value_map = {label: value for value, label in self.provider_display_map.items()}
 
@@ -242,12 +254,31 @@ class WorldDictConfigWindow(tk.Toplevel):
             self.api_url_label.grid_remove()
             self.api_url_entry.grid_remove()
             self.openai_params_frame.grid_remove()
+            self.model_combobox.config(values=[
+                "gemini-2.5-pro-preview-05-06",
+                "gemini-1.5-pro-latest",
+                "gemini-1.5-flash-latest",
+                "gemini-pro",
+            ])
+        elif provider == PROVIDER_NVIDIA_NIM:
+            self.title("世界观字典配置 (NVIDIA NIM)")
+            self.api_key_label.config(text="NVIDIA API Key:")
+            self.api_url_label.grid(row=self.api_url_row, column=0, padx=5, pady=5, sticky="w")
+            self.api_url_entry.grid(row=self.api_url_row, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
+            self.openai_params_frame.grid(row=self.openai_params_row, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
+            self.model_combobox.config(values=NVIDIA_NIM_MODELS)
+            if not initial and not self.api_url_var.get().strip():
+                self.api_url_var.set(NVIDIA_NIM_BASE_URL)
         else:
             self.title("世界观字典配置 (OpenAI 兼容)")
             self.api_key_label.config(text="OpenAI API Key:")
             self.api_url_label.grid(row=self.api_url_row, column=0, padx=5, pady=5, sticky="w")
             self.api_url_entry.grid(row=self.api_url_row, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
             self.openai_params_frame.grid(row=self.openai_params_row, column=0, columnspan=3, padx=5, pady=5, sticky="ew")
+            self.model_combobox.config(values=[
+                "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo",
+                "deepseek-chat", "moonshot-v1-32k",
+            ])
         if not initial:
             self._set_status("供应商已切换，请重新测试连接", "orange")
 
@@ -477,10 +508,27 @@ class TranslateConfigWindow(tk.Toplevel):
         # --- 创建控件 ---
         row_idx = 0
 
+        # 供应商预设
+        self._translate_presets = {
+            "（手动填写）": {"url": "", "models": []},
+            "NVIDIA NIM": {"url": NVIDIA_NIM_BASE_URL, "models": NVIDIA_NIM_MODELS},
+            "DeepSeek": {"url": "https://api.deepseek.com/v1", "models": ["deepseek-chat", "deepseek-coder"]},
+            "Moonshot": {"url": "https://api.moonshot.cn/v1", "models": ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"]},
+            "OpenAI": {"url": "https://api.openai.com/v1", "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]},
+        }
+        self._preset_var = tk.StringVar(value="（手动填写）")
+        ttk.Label(frame, text="供应商预设:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
+        preset_combo = ttk.Combobox(frame, textvariable=self._preset_var,
+                                    values=list(self._translate_presets.keys()),
+                                    state="readonly", width=30)
+        preset_combo.grid(row=row_idx, column=1, padx=5, pady=5, sticky="w")
+        preset_combo.bind("<<ComboboxSelected>>", self._on_preset_selected)
+        row_idx += 1
+
         # API URL
         ttk.Label(frame, text="API URL:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
         self.api_url_entry = ttk.Entry(frame, textvariable=self.api_url_var, width=60)
-        self.api_url_entry.grid(row=row_idx, column=1, columnspan=3, padx=5, pady=5, sticky="ew") # 跨更多列
+        self.api_url_entry.grid(row=row_idx, column=1, columnspan=3, padx=5, pady=5, sticky="ew")
         row_idx += 1
 
         # API Key
@@ -496,13 +544,12 @@ class TranslateConfigWindow(tk.Toplevel):
 
         # Model Name
         ttk.Label(frame, text="模型名称:").grid(row=row_idx, column=0, padx=5, pady=5, sticky="w")
-        model_combobox = ttk.Combobox(frame, textvariable=self.model_var, values=[
-            "deepseek-chat", "deepseek-coder", # DeepSeek 官方模型示例
-            "gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview", "gpt-4o", # OpenAI 模型示例 (加入 gpt-4o)
-            "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k", # Moonshot 模型示例
-            # 添加其他你可能使用的 OpenAI 兼容模型
-        ], width=48)
-        model_combobox.grid(row=row_idx, column=1, columnspan=3, padx=5, pady=5, sticky="ew")
+        self._translate_model_combo = ttk.Combobox(frame, textvariable=self.model_var, values=[
+            "deepseek-chat", "deepseek-coder",
+            "gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview", "gpt-4o", "gpt-4o-mini",
+            "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k",
+        ] + NVIDIA_NIM_MODELS, width=48)
+        self._translate_model_combo.grid(row=row_idx, column=1, columnspan=3, padx=5, pady=5, sticky="ew")
         row_idx += 1
 
         # Spinboxes in a subframe for better layout
@@ -607,6 +654,18 @@ class TranslateConfigWindow(tk.Toplevel):
             self.api_key_entry.config(show="")
         else:
             self.api_key_entry.config(show="*")
+
+    def _on_preset_selected(self, event=None):
+        preset_name = self._preset_var.get()
+        preset = self._translate_presets.get(preset_name, {})
+        url = preset.get("url", "")
+        models = preset.get("models", [])
+        if url:
+            self.api_url_var.set(url)
+        if models:
+            self._translate_model_combo.config(values=models)
+            if self.model_var.get() not in models:
+                self.model_var.set(models[0])
 
     def _on_prompt_modified(self, event=None):
         """Handle Prompt text modification."""
