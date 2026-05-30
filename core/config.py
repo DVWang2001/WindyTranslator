@@ -150,11 +150,11 @@ N. 译文行N
 # --- g4f (GPT4Free) 翻译配置 ---
 DEFAULT_G4F_CONFIG = {
     "provider": "g4f",
-    "g4f_provider": "",           # 空字符串 = 自动选择；或填入如 "Copilot"、"DeepSeek"
-    "model": "gpt-4o-mini",
-    "batch_size": 8,              # g4f 响应速度较慢，建议批次较小
+    "g4f_provider": "Qwen",            # 推荐：直连 chat.qwen.ai，有内建重试逻辑，不走共享中继
+    "model": "qwen3-235b-a22b",        # Qwen3 235B，中文能力强
+    "batch_size": 8,                   # g4f 响应速度较慢，建议批次较小
     "context_lines": 8,
-    "concurrency": 2,             # g4f 不宜高并发
+    "concurrency": 1,                  # g4f 免费 provider 不宜高并发
     "max_retries": 2,
     "source_language": "日语",
     "target_language": "简体中文",
@@ -170,7 +170,8 @@ DEFAULT_PRO_MODE_SETTINGS = {
         "2000": True,
         "2000en": False,
         "2003": False,
-        "2003steam": False
+        "2003steam": False,
+        "2003zh_tw": False
     }
 }
 
